@@ -442,3 +442,82 @@ impl AllPassFilter {
         self.feedback = value;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{bits, Rng};
+
+    fn combs(lengths: &[usize], rng: &mut Rng) -> Vec<CombFilter> {
+        lengths
+            .iter()
+            .map(|&len| {
+                let mut cf = CombFilter::new(len);
+                cf.set_feedback(rng.range(0.7, 0.98));
+                cf.set_damp(rng.range(0.0, 0.4));
+                cf
+            })
+            .collect()
+    }
+
+    fn assert_bank_matches_one_by_one(lengths: &[usize], block: usize, seed: u64) {
+        let mut rng = Rng::new(seed);
+        let mut bank = combs(lengths, &mut rng);
+        let mut rng = Rng::new(seed);
+        let mut serial = combs(lengths, &mut rng);
+
+        for n in 0..200 {
+            // Silence stretches drive states below the denormal threshold, where the flush-to-zero
+            // branches kick in.
+            let input = if n % 50 > 40 {
+                vec![0_f32; block]
+            } else {
+                rng.block(block)
+            };
+            let mut out_bank = vec![0_f32; block];
+            let mut out_serial = vec![0_f32; block];
+            CombFilter::process_bank(&mut bank, &input, &mut out_bank);
+            for cf in serial.iter_mut() {
+                cf.process(&input, &mut out_serial);
+            }
+            assert_eq!(bits(&out_bank), bits(&out_serial), "block {n}");
+        }
+        for (a, b) in bank.iter().zip(&serial) {
+            assert_eq!(a.filter_store.to_bits(), b.filter_store.to_bits());
+            assert_eq!(bits(&a.buffer), bits(&b.buffer));
+            assert_eq!(
+                a.buffer_index % a.buffer.len(),
+                b.buffer_index % b.buffer.len()
+            );
+        }
+    }
+
+    #[test]
+    fn comb_bank_is_bit_identical_to_one_filter_at_a_time() {
+        let freeverb = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
+        assert_bank_matches_one_by_one(&freeverb, 64, 1);
+    }
+
+    #[test]
+    fn comb_bank_handles_several_wraps_per_block() {
+        // Buffers shorter than the block wrap more than once per call (low sample rates).
+        assert_bank_matches_one_by_one(&[7, 13, 29, 31, 64, 65, 100, 3], 128, 2);
+        assert_bank_matches_one_by_one(&[1, 2, 3, 4, 5, 6, 7, 8], 64, 3);
+    }
+
+    #[test]
+    fn comb_bank_falls_back_for_other_filter_counts() {
+        assert_bank_matches_one_by_one(&[1116, 1188, 1277], 64, 4);
+    }
+
+    #[test]
+    fn reverb_at_other_sample_rates_matches_serial_combs() {
+        for rate in [16_000, 22_050, 44_100, 48_000, 96_000] {
+            let lengths: Vec<usize> = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
+                .iter()
+                .map(|&t| Reverb::scale_tuning(rate, t))
+                .collect();
+            assert_bank_matches_one_by_one(&lengths, 64, rate as u64);
+        }
+    }
+}

@@ -176,3 +176,68 @@ impl BiQuadFilter {
         self.a4 = a2 / a0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{bits, Rng};
+
+    const RATE: i32 = 44_100;
+
+    fn filters(n: usize, rng: &mut Rng) -> Vec<BiQuadFilter> {
+        let settings = SynthesizerSettings::new(RATE);
+        (0..n)
+            .map(|_| {
+                let mut f = BiQuadFilter::new(&settings);
+                // About a quarter above the Nyquist guard, which leaves the filter inactive.
+                let cutoff = if rng.below(4) == 0 {
+                    30_000.0
+                } else {
+                    rng.range(20.0, 20_000.0)
+                };
+                f.set_low_pass_filter(cutoff, rng.range(1.0, 10.0));
+                f
+            })
+            .collect()
+    }
+
+    #[test]
+    fn voices_in_lockstep_are_bit_identical_to_one_voice_at_a_time() {
+        // 0..=20 covers empty, remainders below four, one and several groups of four.
+        for voices in 0..=20 {
+            let mut rng = Rng::new(voices as u64 + 10);
+            let mut lockstep = filters(voices, &mut rng);
+            let mut rng = Rng::new(voices as u64 + 10);
+            let mut serial = filters(voices, &mut rng);
+
+            for n in 0..100 {
+                if n % 25 == 0 {
+                    // Cutoff changes mid-note, as with a modulation envelope.
+                    for (a, b) in lockstep.iter_mut().zip(serial.iter_mut()) {
+                        let (cutoff, q) = (rng.range(20.0, 25_000.0), rng.range(1.0, 5.0));
+                        a.set_low_pass_filter(cutoff, q);
+                        b.set_low_pass_filter(cutoff, q);
+                    }
+                }
+                let blocks: Vec<Vec<f32>> = (0..voices).map(|_| rng.block(64)).collect();
+                let mut out_lockstep = blocks.clone();
+                let mut out_serial = blocks;
+                BiQuadFilter::process_voices(
+                    lockstep
+                        .iter_mut()
+                        .zip(out_lockstep.iter_mut().map(|b| &mut b[..])),
+                );
+                for (f, b) in serial.iter_mut().zip(out_serial.iter_mut()) {
+                    f.process(b);
+                }
+                for v in 0..voices {
+                    assert_eq!(
+                        bits(&out_lockstep[v]),
+                        bits(&out_serial[v]),
+                        "{voices} voices, block {n}, voice {v}"
+                    );
+                }
+            }
+        }
+    }
+}
