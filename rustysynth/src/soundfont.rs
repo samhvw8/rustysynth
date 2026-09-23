@@ -5,6 +5,7 @@ use std::io::Read;
 use crate::binary_reader::BinaryReader;
 use crate::error::SoundFontError;
 use crate::four_cc::FourCC;
+use crate::generator_type::GeneratorType;
 use crate::instrument::Instrument;
 use crate::preset::Preset;
 use crate::sample_header::SampleHeader;
@@ -51,7 +52,7 @@ impl SoundFont {
         let sample_data = SoundFontSampleData::new(reader)?;
         let parameters = SoundFontParameters::new(reader)?;
 
-        let sound_font = Self {
+        let mut sound_font = Self {
             info,
             bits_per_sample: sample_data.bits_per_sample,
             wave_data: sample_data.wave_data,
@@ -65,31 +66,27 @@ impl SoundFont {
         Ok(sound_font)
     }
 
-    fn sanity_check(&self) -> Result<(), SoundFontError> {
-        // https://github.com/sinshu/rustysynth/issues/22
-        // https://github.com/sinshu/rustysynth/issues/33
-        // https://github.com/sinshu/rustysynth/pull/51
-        for instrument in &self.instruments {
-            for region in &instrument.regions {
+    // Patch from https://github.com/sinshu/rustysynth/issues/55: reject only an
+    // unusable playback range; repair an unusable loop range by disabling the loop.
+    fn sanity_check(&mut self) -> Result<(), SoundFontError> {
+        let wave_length = self.wave_data.len();
+        for instrument in &mut self.instruments {
+            for region in &mut instrument.regions {
                 let start = region.get_sample_start();
                 let end = region.get_sample_end();
+                if start < 0 || end <= start || end as usize >= wave_length {
+                    return Err(SoundFontError::SanityCheckFailed);
+                }
+                if region.get_sample_modes() == LoopMode::NoLoop {
+                    continue;
+                }
                 let start_loop = region.get_sample_start_loop();
                 let end_loop = region.get_sample_end_loop();
-                let loop_mode = region.get_sample_modes();
-
-                if start < 0
-                    || start_loop < 0
-                    || end as usize >= self.wave_data.len()
-                    || end_loop as usize >= self.wave_data.len()
-                    || end <= start
-                    || end_loop < start_loop
-                    || (loop_mode != LoopMode::NoLoop && start_loop >= end_loop)
-                {
-                    return Err(SoundFontError::SanityCheckFailed);
+                if start_loop < 0 || end_loop as usize >= wave_length || start_loop >= end_loop {
+                    region.gs[GeneratorType::SAMPLE_MODES as usize] = 0;
                 }
             }
         }
-
         Ok(())
     }
 
