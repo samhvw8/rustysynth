@@ -1,3 +1,9 @@
+#[cfg(test)]
+mod support;
+
+#[cfg(test)]
+mod behaviour_test;
+
 mod instrument_util;
 mod preset_util;
 mod sample_util;

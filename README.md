@@ -173,3 +173,15 @@ std::thread::sleep(std::time::Duration::from_secs(10));
 ## License
 
 RustySynth is available under [the MIT license](LICENSE.txt).
+
+## Tests (bachable fork)
+
+```sh
+./fetch-test-soundfonts.sh      # TimGM6mb and GeneralUser GS MuseScore, checked by SHA-256
+cargo test --release
+RUSTYSYNTH_TOH=/path/to/TOH.sf2 cargo test --release   # also check Timbres of Heaven 3.4
+```
+
+`rustysynth_test/src/behaviour_test.rs` pins the rendered audio: golden fingerprints of a six-second
+ensemble recorded before the speed-up patches, determinism, soundfonts shared across threads, and the
+loop-range repair on synthetic SoundFonts.
