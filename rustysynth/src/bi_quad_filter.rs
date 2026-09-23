@@ -99,6 +99,75 @@ impl BiQuadFilter {
         }
     }
 
+    /// Filters the blocks of every active voice, four voices at a time.
+    ///
+    /// A single filter is a serial recurrence, so one voice at a time leaves the CPU waiting on it.
+    /// Four independent voices in lockstep let the CPU overlap their dependency chains (the code
+    /// stays scalar; the gain is instruction-level parallelism, not SIMD). Each lane evaluates
+    /// the same expression in the same order as `process`, so the output is bit-identical.
+    pub(crate) fn process_voices<'a>(
+        voices: impl Iterator<Item = (&'a mut BiQuadFilter, &'a mut [f32])>,
+    ) {
+        let mut active = voices.filter_map(|(filter, block)| {
+            if filter.active {
+                Some((filter, block))
+            } else {
+                filter.process(block);
+                None
+            }
+        });
+        loop {
+            match (active.next(), active.next(), active.next(), active.next()) {
+                (Some(a), Some(b), Some(c), Some(d)) => BiQuadFilter::process4([a, b, c, d]),
+                (a, b, c, _) => {
+                    for (filter, block) in [a, b, c].into_iter().flatten() {
+                        filter.process(block);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::needless_range_loop)]
+    fn process4(lanes: [(&mut BiQuadFilter, &mut [f32]); 4]) {
+        let [(f0, b0), (f1, b1), (f2, b2), (f3, b3)] = lanes;
+        let filters = [f0, f1, f2, f3];
+        let blocks = [b0, b1, b2, b3];
+        let length = blocks.iter().map(|b| b.len()).min().unwrap();
+
+        let a0: [f32; 4] = std::array::from_fn(|k| filters[k].a0);
+        let a1: [f32; 4] = std::array::from_fn(|k| filters[k].a1);
+        let a2: [f32; 4] = std::array::from_fn(|k| filters[k].a2);
+        let a3: [f32; 4] = std::array::from_fn(|k| filters[k].a3);
+        let a4: [f32; 4] = std::array::from_fn(|k| filters[k].a4);
+        let mut x1: [f32; 4] = std::array::from_fn(|k| filters[k].x1);
+        let mut x2: [f32; 4] = std::array::from_fn(|k| filters[k].x2);
+        let mut y1: [f32; 4] = std::array::from_fn(|k| filters[k].y1);
+        let mut y2: [f32; 4] = std::array::from_fn(|k| filters[k].y2);
+
+        for t in 0..length {
+            let input: [f32; 4] = std::array::from_fn(|k| blocks[k][t]);
+            let output: [f32; 4] = std::array::from_fn(|k| {
+                a0[k] * input[k] + a1[k] * x1[k] + a2[k] * x2[k] - a3[k] * y1[k] - a4[k] * y2[k]
+            });
+            x2 = x1;
+            x1 = input;
+            y2 = y1;
+            y1 = output;
+            for k in 0..4 {
+                blocks[k][t] = output[k];
+            }
+        }
+
+        for (k, filter) in filters.into_iter().enumerate() {
+            filter.x1 = x1[k];
+            filter.x2 = x2[k];
+            filter.y1 = y1[k];
+            filter.y2 = y2[k];
+        }
+    }
+
     fn set_coefficients(&mut self, a0: f32, a1: f32, a2: f32, b0: f32, b1: f32, b2: f32) {
         self.a0 = b0 / a0;
         self.a1 = b1 / a0;

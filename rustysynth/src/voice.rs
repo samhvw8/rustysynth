@@ -229,7 +229,7 @@ impl Voice {
             self.filter
                 .set_low_pass_filter(self.smoothed_cutoff, self.resonance);
         }
-        self.filter.process(&mut self.block[..]);
+        // The filter itself runs later, in VoiceCollection::process, together with other voices' filters.
 
         self.previous_mix_gain_left = self.current_mix_gain_left;
         self.previous_mix_gain_right = self.current_mix_gain_right;
@@ -294,6 +294,10 @@ impl Voice {
 
             self.voice_state = VoiceState::Released;
         }
+    }
+
+    pub(crate) fn filter_and_block(&mut self) -> (&mut BiQuadFilter, &mut [f32]) {
+        (&mut self.filter, &mut self.block[..])
     }
 
     pub(crate) fn block(&self) -> &Vec<f32> {

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::bi_quad_filter::BiQuadFilter;
 use crate::channel::Channel;
 use crate::instrument_region::InstrumentRegion;
 use crate::synthesizer_settings::SynthesizerSettings;
@@ -75,7 +76,7 @@ impl VoiceCollection {
 
         loop {
             if i == self.active_voice_count {
-                return;
+                break;
             }
 
             if self.voices[i].process(data, channels) {
@@ -85,6 +86,12 @@ impl VoiceCollection {
                 self.voices.swap(i, self.active_voice_count);
             }
         }
+
+        BiQuadFilter::process_voices(
+            self.voices[..self.active_voice_count]
+                .iter_mut()
+                .map(Voice::filter_and_block),
+        );
     }
 
     pub(crate) fn get_active_voices(&mut self) -> &mut [Voice] {
