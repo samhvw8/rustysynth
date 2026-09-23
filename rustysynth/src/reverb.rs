@@ -166,17 +166,13 @@ impl Reverb {
             *rsample = 0_f32;
         }
 
-        for cf in self.cfs_l.iter_mut() {
-            cf.process(input, output_left);
-        }
+        CombFilter::process_bank(&mut self.cfs_l, input, output_left);
 
         for apf in self.apfs_l.iter_mut() {
             apf.process(output_left);
         }
 
-        for cf in self.cfs_r.iter_mut() {
-            cf.process(input, output_right);
-        }
+        CombFilter::process_bank(&mut self.cfs_r, input, output_right);
 
         for apf in self.apfs_r.iter_mut() {
             apf.process(output_right);
@@ -269,6 +265,63 @@ impl CombFilter {
         }
 
         self.filter_store = 0_f32;
+    }
+
+    /// Runs the eight comb filters of one channel in lockstep, one sample at a time.
+    ///
+    /// Each filter's damping state is a serial dependency, so running them one after another leaves the
+    /// CPU waiting on that chain. Interleaving eight independent chains hides the latency. Every filter
+    /// performs the same operations in the same order as `process`, and the outputs are summed in filter
+    /// order, so the result is bit-identical.
+    fn process_bank(cfs: &mut [CombFilter], input_block: &[f32], output_block: &mut [f32]) {
+        const N: usize = 8;
+        if cfs.len() != N {
+            for cf in cfs.iter_mut() {
+                cf.process(input_block, output_block);
+            }
+            return;
+        }
+        let cfs: &mut [CombFilter; N] = cfs.try_into().unwrap();
+
+        let len: [usize; N] = std::array::from_fn(|k| cfs[k].buffer.len());
+        let feedback: [f32; N] = std::array::from_fn(|k| cfs[k].feedback);
+        let damp1: [f32; N] = std::array::from_fn(|k| cfs[k].damp1);
+        let damp2: [f32; N] = std::array::from_fn(|k| cfs[k].damp2);
+        let mut store: [f32; N] = std::array::from_fn(|k| cfs[k].filter_store);
+        let mut index: [usize; N] = std::array::from_fn(|k| {
+            if cfs[k].buffer_index == len[k] {
+                0
+            } else {
+                cfs[k].buffer_index
+            }
+        });
+        let buffers = cfs.each_mut().map(|cf| cf.buffer.as_mut_slice());
+
+        for (&input, destination) in input_block.iter().zip(output_block.iter_mut()) {
+            let mut sum = *destination;
+            for k in 0..N {
+                let i = index[k];
+                let mut output = buffers[k][i];
+                if output.abs() < 1.0E-6_f32 {
+                    output = 0_f32;
+                }
+
+                store[k] = (output * damp2[k]) + (store[k] * damp1[k]);
+                if store[k].abs() < 1.0E-6_f32 {
+                    store[k] = 0_f32;
+                }
+
+                buffers[k][i] = input + (store[k] * feedback[k]);
+                sum += output;
+                index[k] = if i + 1 == len[k] { 0 } else { i + 1 };
+            }
+            *destination = sum;
+        }
+
+        for (k, cf) in cfs.iter_mut().enumerate() {
+            cf.filter_store = store[k];
+            cf.buffer_index = index[k];
+        }
     }
 
     fn process(&mut self, input_block: &[f32], output_block: &mut [f32]) {
