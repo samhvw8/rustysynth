@@ -105,6 +105,14 @@ impl Oscillator {
     }
 
     fn fill_block_no_loop(&mut self, data: &[i16], block: &mut [f32], pitch_ratio_fp: i64) -> bool {
+        let last_fp = self.position_fp + (block.len() as i64 - 1) * pitch_ratio_fp;
+        let last_index = (last_fp >> Oscillator::FRAC_BITS) as usize;
+        if pitch_ratio_fp >= 0 && last_index < self.end as usize && last_index + 1 < data.len() {
+            self.position_fp =
+                Oscillator::interpolate(data, block, self.position_fp, pitch_ratio_fp);
+            return true;
+        }
+
         for t in 0..block.len() {
             let index = (self.position_fp >> Oscillator::FRAC_BITS) as usize;
             if index >= self.end as usize {
@@ -139,6 +147,19 @@ impl Oscillator {
         let loop_length = (self.end_loop - self.start_loop) as i64;
         let loop_length_fp = loop_length << Oscillator::FRAC_BITS;
 
+        // Most blocks never reach the loop end: then no wrap-around is needed and the plain
+        // interpolation loop gives the same samples.
+        let last_fp = self.position_fp + (block.len() as i64 - 1) * pitch_ratio_fp;
+        if pitch_ratio_fp >= 0
+            && self.position_fp < end_loop_fp
+            && (last_fp >> Oscillator::FRAC_BITS) + 1 < self.end_loop as i64
+            && ((last_fp >> Oscillator::FRAC_BITS) as usize) + 1 < data.len()
+        {
+            self.position_fp =
+                Oscillator::interpolate(data, block, self.position_fp, pitch_ratio_fp);
+            return true;
+        }
+
         for sample in block.iter_mut() {
             if self.position_fp >= end_loop_fp {
                 self.position_fp -= loop_length_fp;
@@ -160,5 +181,20 @@ impl Oscillator {
         }
 
         true
+    }
+
+    /// Linear interpolation for a stretch known to stay inside `data` and away from loop points.
+    /// Returns the position after the block.
+    fn interpolate(data: &[i16], block: &mut [f32], position_fp: i64, pitch_ratio_fp: i64) -> i64 {
+        for (t, sample) in block.iter_mut().enumerate() {
+            let position_fp = position_fp + t as i64 * pitch_ratio_fp;
+            let index = (position_fp >> Oscillator::FRAC_BITS) as usize;
+            let x1 = data[index] as i64;
+            let x2 = data[index + 1] as i64;
+            let a_fp = position_fp & (Oscillator::FRAC_UNIT - 1);
+            *sample = Oscillator::FP_TO_SAMPLE
+                * ((x1 << Oscillator::FRAC_BITS) + a_fp * (x2 - x1)) as f32;
+        }
+        position_fp + block.len() as i64 * pitch_ratio_fp
     }
 }
