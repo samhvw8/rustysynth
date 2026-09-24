@@ -35,6 +35,13 @@ pub(crate) struct Voice {
 
     block: Vec<f32>,
 
+    // Pan and modulated cutoff rarely change between blocks; cache the last input and result of
+    // cos/sin and powf. Keyed on the exact input, so the output is unchanged.
+    last_angle: f32,
+    last_angle_cos_sin: (f32, f32),
+    last_cutoff_cents: f32,
+    last_cutoff_factor: f32,
+
     // A sudden change in the mix gain will cause pop noise.
     // To avoid this, we save the mix gain of the previous block,
     // and smooth out the gain if the gap between the current and previous gain is too large.
@@ -94,6 +101,10 @@ impl Voice {
             oscillator: Oscillator::new(settings),
             filter: BiQuadFilter::new(settings),
             block: vec![0_f32; settings.block_size],
+            last_angle: f32::NAN,
+            last_angle_cos_sin: (0_f32, 0_f32),
+            last_cutoff_cents: f32::NAN,
+            last_cutoff_factor: 0_f32,
             previous_mix_gain_left: 0_f32,
             previous_mix_gain_right: 0_f32,
             current_mix_gain_left: 0_f32,
@@ -218,7 +229,11 @@ impl Voice {
         if self.dynamic_cutoff {
             let cents = self.mod_lfo_to_cutoff as f32 * self.mod_lfo.get_value()
                 + self.mod_env_to_cutoff as f32 * self.mod_env.get_value();
-            let factor = SoundFontMath::cents_to_multiplying_factor(cents);
+            if cents.to_bits() != self.last_cutoff_cents.to_bits() {
+                self.last_cutoff_factor = SoundFontMath::cents_to_multiplying_factor(cents);
+                self.last_cutoff_cents = cents;
+            }
+            let factor = self.last_cutoff_factor;
             let new_cutoff = factor * self.cutoff;
 
             // The cutoff change is limited within x0.5 and x2 to reduce pop noise.
@@ -255,8 +270,12 @@ impl Voice {
             self.current_mix_gain_left = 0_f32;
             self.current_mix_gain_right = mix_gain;
         } else {
-            self.current_mix_gain_left = mix_gain * angle.cos();
-            self.current_mix_gain_right = mix_gain * angle.sin();
+            if angle.to_bits() != self.last_angle.to_bits() {
+                self.last_angle_cos_sin = (angle.cos(), angle.sin());
+                self.last_angle = angle;
+            }
+            self.current_mix_gain_left = mix_gain * self.last_angle_cos_sin.0;
+            self.current_mix_gain_right = mix_gain * self.last_angle_cos_sin.1;
         }
 
         self.current_reverb_send = SoundFontMath::clamp(

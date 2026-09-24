@@ -28,6 +28,11 @@ pub(crate) struct Oscillator {
     looping: bool,
 
     position_fp: i64,
+
+    // Pitch is unchanged from the previous block for ~98% of voice blocks; reuse the ratio
+    // instead of calling powf again. Same input, same result.
+    last_pitch: f32,
+    last_pitch_ratio: f32,
 }
 
 impl Oscillator {
@@ -50,6 +55,8 @@ impl Oscillator {
             sample_rate_ratio: 0_f32,
             looping: false,
             position_fp: 0,
+            last_pitch: f32::NAN,
+            last_pitch_ratio: 0_f32,
         }
     }
 
@@ -80,6 +87,7 @@ impl Oscillator {
         self.sample_rate_ratio = sample_rate as f32 / self.synthesizer_sample_rate as f32;
         self.looping = self.loop_mode != LoopMode::NoLoop;
         self.position_fp = (start as i64) << Oscillator::FRAC_BITS;
+        self.last_pitch = f32::NAN;
     }
 
     pub(crate) fn release(&mut self) {
@@ -89,9 +97,12 @@ impl Oscillator {
     }
 
     pub(crate) fn process(&mut self, data: &[i16], block: &mut [f32], pitch: f32) -> bool {
-        let pitch_change = self.pitch_change_scale * (pitch - self.root_key as f32) + self.tune;
-        let pitch_ratio = self.sample_rate_ratio * 2_f32.powf(pitch_change / 12_f32);
-        self.fill_block(data, block, pitch_ratio as f64)
+        if pitch.to_bits() != self.last_pitch.to_bits() {
+            let pitch_change = self.pitch_change_scale * (pitch - self.root_key as f32) + self.tune;
+            self.last_pitch_ratio = self.sample_rate_ratio * 2_f32.powf(pitch_change / 12_f32);
+            self.last_pitch = pitch;
+        }
+        self.fill_block(data, block, self.last_pitch_ratio as f64)
     }
 
     fn fill_block(&mut self, data: &[i16], block: &mut [f32], pitch_ratio: f64) -> bool {
