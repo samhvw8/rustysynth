@@ -21,6 +21,11 @@ pub(crate) struct BiQuadFilter {
     x2: f32,
     y1: f32,
     y2: f32,
+
+    // Inputs of the last coefficient calculation. Modulated voices call set_low_pass_filter every
+    // block, but once their envelopes settle the cutoff stops changing and cos/sin can be skipped.
+    last_cutoff: f32,
+    last_resonance: f32,
 }
 
 impl BiQuadFilter {
@@ -39,6 +44,8 @@ impl BiQuadFilter {
             x2: 0_f32,
             y1: 0_f32,
             y2: 0_f32,
+            last_cutoff: f32::NAN,
+            last_resonance: f32::NAN,
         }
     }
 
@@ -50,6 +57,11 @@ impl BiQuadFilter {
     }
 
     pub(crate) fn set_low_pass_filter(&mut self, cutoff_frequency: f32, resonance: f32) {
+        if cutoff_frequency == self.last_cutoff && resonance == self.last_resonance {
+            return;
+        }
+        self.last_cutoff = cutoff_frequency;
+        self.last_resonance = resonance;
         if cutoff_frequency < 0.499_f32 * self.sample_rate as f32 {
             self.active = true;
 
@@ -199,6 +211,41 @@ mod tests {
                 f
             })
             .collect()
+    }
+
+    #[test]
+    fn cached_coefficients_equal_recomputed_ones() {
+        let settings = SynthesizerSettings::new(RATE);
+        let mut rng = Rng::new(99);
+        let mut cached = BiQuadFilter::new(&settings);
+        for _ in 0..10_000 {
+            // Repeat values often, as settled envelopes do, so the cache is exercised.
+            let (cutoff, q) = if rng.below(3) == 0 {
+                (cached.last_cutoff, cached.last_resonance)
+            } else {
+                (rng.range(20.0, 25_000.0), rng.range(1.0, 10.0))
+            };
+            if cutoff.is_nan() {
+                continue;
+            }
+            cached.set_low_pass_filter(cutoff, q);
+            let mut fresh = BiQuadFilter::new(&settings);
+            fresh.set_low_pass_filter(cutoff, q);
+            assert_eq!(cached.active, fresh.active);
+            if !fresh.active {
+                // An inactive filter never reads its coefficients.
+                continue;
+            }
+            for (a, b) in [
+                (cached.a0, fresh.a0),
+                (cached.a1, fresh.a1),
+                (cached.a2, fresh.a2),
+                (cached.a3, fresh.a3),
+                (cached.a4, fresh.a4),
+            ] {
+                assert_eq!(a.to_bits(), b.to_bits());
+            }
+        }
     }
 
     #[test]
