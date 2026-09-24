@@ -13,3 +13,4 @@ keywords = ["soundfont", "midi", "synthesizer", "audio", "music"]
 categories = ["multimedia::audio"]
 
 [dependencies]
+memmap2 = "0.9"
